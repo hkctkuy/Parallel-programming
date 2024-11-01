@@ -1,0 +1,323 @@
+diff --git a/6-sys-of-linear-eqs-mpi/Makefile b/6-sys-of-linear-eqs-mpi/Makefile
+index 35f66ac..270369f 100644
+--- a/6-sys-of-linear-eqs-mpi/Makefile
++++ b/6-sys-of-linear-eqs-mpi/Makefile
+@@ -1,8 +1,8 @@
+ CXX=mpic++
+-OMPI_CC=clang
+-OMPI_CXX=clang++
+-CXXFLAGS=-fopenmp=libiomp5 -std=c++17 -O3
+-LDFLAGS=-fopenmp=libiomp5
++OMPI_CC=gcc
++OMPI_CXX=g++
++CXXFLAGS=-fopenmp -std=c++11 -O3
++LDFLAGS=-fopenmp
+ SOURCES=solver.cc
+ OBJECTS=$(SOURCES:.cc=.o)
+ EXECUTABLE=solver
+diff --git a/6-sys-of-linear-eqs-mpi/solver.cc b/6-sys-of-linear-eqs-mpi/solver.cc
+index cf0d034..5d0de49 100644
+--- a/6-sys-of-linear-eqs-mpi/solver.cc
++++ b/6-sys-of-linear-eqs-mpi/solver.cc
+@@ -234,7 +234,7 @@ bool is_square(
+  * # Return value:
+  * * part - partition array
+  */
+-auto fill_part(
++std::vector<int> fill_part(
+     std::vector<size_t>& l2g,
+     size_t nv,
+     size_t no,
+@@ -315,7 +315,15 @@ auto fill_part(
+  * * sends - interface vertex send info
+  * * t - time
+  */
+-auto gen(
++std::tuple<
++    std::vector<size_t>,
++    std::vector<size_t>,
++    std::vector<size_t>,
++    std::vector<int>,
++    Sections,
++    Sends,
++    double
++> gen(
+     size_t nx,
+     size_t ny,
+     size_t k1,
+@@ -631,7 +639,15 @@ auto gen(
+     auto part = fill_part(l2g, nv, no, px, py, pr);
+     auto end = omp_get_wtime();
+     auto t = end - start;
+-    return std::tuple{ia, ja, l2g, part, sections, sends, t};
++    return std::tuple<
++        std::vector<size_t>,
++        std::vector<size_t>,
++        std::vector<size_t>,
++        std::vector<int>,
++        Sections,
++        Sends,
++        double
++    >(ia, ja, l2g, part, sections, sends, t);
+ }
+ 
+ inline double filler_i(size_t i) {
+@@ -653,7 +669,11 @@ inline double filler_ij(size_t i, size_t j) {
+  * * b - right side array
+  * * t - time
+  */
+-auto fill(
++std::tuple<
++    std::vector<double>,
++    std::vector<double>,
++    double
++> fill(
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+     std::vector<size_t>& l2g,
+@@ -684,7 +704,7 @@ auto fill(
+     }
+     auto end = omp_get_wtime();
+     auto t = end - start;
+-    return std::tuple{a, b, t};
++    return std::tuple<std::vector<double>, std::vector<double>, double>(a, b, t);
+ }
+ 
+ /* Get interprocess communication receive vector
+@@ -694,7 +714,7 @@ auto fill(
+  * # Return value
+  * * recv - receive vector
+  */
+-auto get_recv(size_t offset, size_t size) {
++std::vector<size_t> get_recv(size_t offset, size_t size) {
+     std::vector<size_t> recv(size);
+     #pragma omp parallel for
+     for (size_t i = 0; i < size; i++) {
+@@ -712,7 +732,7 @@ auto get_recv(size_t offset, size_t size) {
+  * # Return value
+  * * Comm struct
+  */
+-auto get_comm(
++Comm get_comm(
+     Section halo,
+     std::vector<size_t>& send,
+     std::vector<size_t>& l2g,
+@@ -736,7 +756,10 @@ auto get_comm(
+  * * comms - interprocess communication array
+  * * t - time
+  */
+-auto build_comm(
++std::tuple<
++    std::vector<Comm>,
++    double
++> build_comm(
+     Sends& sends,
+     Sections& sections,
+     std::vector<int>& part,
+@@ -760,7 +783,7 @@ auto build_comm(
+     }
+     auto end = omp_get_wtime();
+     auto t = end - start;
+-    return std::tuple{comms, t};
++    return std::tuple<std::vector<Comm>, double>{comms, t};
+ }
+ 
+ /* Update process halo values by communication with the others
+@@ -814,7 +837,11 @@ void update(
+  * * jm - col CSR result array
+  * * m - val CSR result array
+  */
+-auto get_inverse_diag_m(
++std::tuple<
++    std::vector<size_t>,
++    std::vector<size_t>,
++    std::vector<double>
++> get_inverse_diag_m(
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+     std::vector<double>& a,
+@@ -836,7 +863,7 @@ auto get_inverse_diag_m(
+         }
+     }
+     im[no] = no;
+-    return std::tuple{std::move(im), std::move(jm), std::move(m)};
++    return std::tuple<std::vector<size_t>, std::vector<size_t>, std::vector<double>>(im, jm, m);
+ }
+ 
+ /* Compute scalar product of two vectors with equal sizes
+@@ -848,7 +875,7 @@ auto get_inverse_diag_m(
+  * * scalar product value
+  * * computing time
+  */
+-auto scalar(
++std::tuple<double, double> scalar(
+     std::vector<double>& a,
+     std::vector<double>& b,
+     size_t no
+@@ -868,7 +895,7 @@ auto scalar(
+     double global_sum;
+     MPI_Allreduce(&local_sum, &global_sum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+     auto end = omp_get_wtime();
+-    return std::pair(global_sum, end - start);
++    return std::tuple<double, double>(global_sum, end - start);
+ }
+ 
+ /* Store sum of two vectors with equal sizes (second with coef)
+@@ -881,7 +908,7 @@ auto scalar(
+  * # Return value:
+  * * computing time
+  */
+-auto sum_vvc(
++double sum_vvc(
+     std::vector<double>& res,
+     std::vector<double>& a,
+     std::vector<double>& b,
+@@ -909,7 +936,7 @@ auto sum_vvc(
+  * # Return value:
+  * * computing time
+  */
+-auto mul_mv(
++double mul_mv(
+     std::vector<double>& res,
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+@@ -968,7 +995,8 @@ double L2norm(
+     std::vector<double>& a,
+     size_t no
+ ) {
+-    auto [scal, _] = scalar(a, a, no);
++    auto tuple = scalar(a, a, no);
++    auto scal = std::get<0>(tuple);
+     return std::sqrt(scal);
+ }
+ 
+@@ -985,11 +1013,16 @@ double L2norm(
+  * * ll - log level
+  * # Return values:
+  * * x - solution
+- * * k - iteration number
+  * * r - residual
++ * * k - iteration number
+  * * t - operation time tuple
+  */
+-auto solve(
++std::tuple<
++    std::vector<double>,
++    std::vector<double>,
++    size_t,
++    std::tuple<double, double, double, double>
++> solve(
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+     std::vector<double>& a,
+@@ -1009,13 +1042,18 @@ auto solve(
+     std::vector<double> z(n);
+     std::vector<double> p(n);
+     std::vector<double> q(n);
+-    auto [im, jm, m] = get_inverse_diag_m(ia, ja, a, no);
++    auto t1 = get_inverse_diag_m(ia, ja, a, no);
++    auto im = std::get<0>(t1);
++    auto jm = std::get<1>(t1);
++    auto  m = std::get<2>(t1);
+     double ro_prev = eps * eps + 1;
+     size_t k = 1;
+     auto start = omp_get_wtime();
+     for(; ro_prev > eps * eps && k < maxit; k++) {
+         auto z_mul_time = mul_mv(z, im, jm, m, r, comms, no); // z = M^(-1) * r
+-        auto [ro, ro_scal_time] = scalar(r, z, no);
++        auto t2 = scalar(r, z, no);
++        auto ro = std::get<0>(t2);
++        auto ro_scal_time = std::get<1>(t2);
+         if (k == 1) {
+             p = z; // NOTE: not move!!!
+         } else {
+@@ -1023,7 +1061,9 @@ auto solve(
+             sum_vvc(p, z, p, beta);
+         }
+         auto q_mul_time = mul_mv(q, ia, ja, a, p, comms, no); // q = Ap
+-        auto [scal, scal_time] = scalar(p, q, no);
++        auto t3 = scalar(p, q, no);
++        auto scal = std::get<0>(t3);
++        auto scal_time = std::get<1>(t3);
+         auto alpha = ro / scal;
+         auto x_add_time = sum_vvc(x, x, p, alpha);
+         auto r_add_time = sum_vvc(r, r, q, -alpha);
+@@ -1041,8 +1081,15 @@ auto solve(
+     }
+     auto end = omp_get_wtime();
+     auto time = end - start;
+-    auto t = std::tuple(time, total_scal_time, total_add_time, total_mul_time);
+-    return std::tuple(x, r, k, t);
++    auto t = std::tuple<double, double, double, double>(
++            time, total_scal_time, total_add_time, total_mul_time
++    );
++    return std::tuple<
++        std::vector<double>,
++        std::vector<double>,
++        size_t,
++        std::tuple<double, double, double, double>
++    >(x, r, k, t);
+ }
+ 
+ int main(int argc, char** argv) {
+@@ -1112,7 +1159,14 @@ int main(int argc, char** argv) {
+     if (ll >= InfoLog && pr == 0) {
+         print("Generating IA/JA...");
+     }
+-    auto [ia, ja, l2g, part, sections, sends, gen_time] = gen(nx, ny, k1, k2, px, py, pr, ll);
++    auto gen_tuple = gen(nx, ny, k1, k2, px, py, pr, ll);
++    auto ia = std::get<0>(gen_tuple);
++    auto ja = std::get<1>(gen_tuple);
++    auto l2g = std::get<2>(gen_tuple);
++    auto part = std::get<3>(gen_tuple);
++    auto sections = std::get<4>(gen_tuple);
++    auto sends = std::get<5>(gen_tuple);
++    auto gen_time = std::get<6>(gen_tuple);
+     auto no = sections.own.size;
+     if (ll >= ArrayLog) {
+         print(pr, "IA", ia);
+@@ -1129,7 +1183,10 @@ int main(int argc, char** argv) {
+     if (ll >= InfoLog && pr == 0) {
+         print("Filling A/b...");
+     }
+-    auto [a, b, fill_time] = fill(ia, ja, l2g, no);
++    auto fill_tuple = fill(ia, ja, l2g, no);
++    auto a = std::get<0>(fill_tuple);
++    auto b = std::get<1>(fill_tuple);
++    auto fill_time = std::get<2>(fill_tuple);
+     if (ll >= ArrayLog) {
+         print(pr, "A", a);
+         print(pr, "b", b);
+@@ -1142,7 +1199,9 @@ int main(int argc, char** argv) {
+     if (ll >= InfoLog && pr == 0) {
+         print("Build comms");
+     }
+-    auto [comms, comm_time] = build_comm(sends, sections, part, l2g);
++    auto comm_tuple = build_comm(sends, sections, part, l2g);
++    auto comms = std::get<0>(comm_tuple);
++    auto comm_time = std::get<1>(comm_tuple);
+     if (ll >= ArrayLog) {
+         print(pr, "Comms", comms.size());
+         for (const auto& comm: comms) {
+@@ -1159,12 +1218,19 @@ int main(int argc, char** argv) {
+     if (ll >= InfoLog && pr == 0) {
+         print("Solving...");
+     }
+-    auto [x, r, k, t] = solve(ia, ja, a, b, comms, no, eps, maxit, ll);
++    auto solve_tuple = solve(ia, ja, a, b, comms, no, eps, maxit, ll);
++    auto x = std::get<0>(solve_tuple);
++    auto r = std::get<1>(solve_tuple);
++    auto k = std::get<2>(solve_tuple);
++    auto t = std::get<3>(solve_tuple);
+     if (ll >= ArrayLog) {
+         print(pr, "x", x);
+     }
+     if (ll >= TimeLog) {
+-        auto [solve_time, scal_time, add_time, mul_time] = t;
++        auto solve_time = std::get<0>(t);
++        auto scal_time = std::get<1>(t);
++        auto add_time = std::get<2>(t);
++        auto mul_time = std::get<3>(t);
+         print(pr, "Solve time", solve_time);
+         print(pr, "Scalar time", scal_time);
+         print(pr, "Add time", add_time);
