@@ -1,0 +1,306 @@
+diff --git a/5-sys-of-linear-eqs-omp/Makefile b/5-sys-of-linear-eqs-omp/Makefile
+index bedd548..53e63fb 100644
+--- a/5-sys-of-linear-eqs-omp/Makefile
++++ b/5-sys-of-linear-eqs-omp/Makefile
+@@ -1,6 +1,6 @@
+-CC=clang++
+-CFLAGS=-std=c++17 -O3 -I/usr/lib/gcc/x86_64-linux-gnu/11/include
+-LDFLAGS=-fopenmp=libiomp5
++CC=g++
++CFLAGS=-std=c++11 -O3 -I/usr/lib/gcc/x86_64-linux-gnu/11/include
++LDFLAGS=-fopenmp
+ SOURCES=solver.cc
+ OBJECTS=$(SOURCES:.cc=.o)
+ EXECUTABLE=solver
+diff --git a/5-sys-of-linear-eqs-omp/solver.cc b/5-sys-of-linear-eqs-omp/solver.cc
+index 2cc9b06..9be7a0c 100644
+--- a/5-sys-of-linear-eqs-omp/solver.cc
++++ b/5-sys-of-linear-eqs-omp/solver.cc
+@@ -1,8 +1,8 @@
+ #include <algorithm>
+ #include <cmath>
+ #include <iostream>
+-#include <utility>
+ #include <vector>
++#include <tuple>
+ 
+ #include <omp.h>
+ 
+@@ -75,7 +75,8 @@ inline size_t get_vertex(
+  * * ja - col CSR array
+  * * t - time
+  */
+-auto gen(
++std::tuple<std::vector<size_t>, std::vector<size_t>, double>
++gen(
+     size_t nx,
+     size_t ny,
+     size_t k1,
+@@ -118,8 +119,8 @@ auto gen(
+     #pragma omp parallel
+     {
+         #pragma omp for
+-        for (auto& dist_val : dist_ja) {
+-            dist_val = std::vector<size_t>(MAX_POSSIBLE_NEIB);
++        for (size_t i = 0; i < nv; i++) {
++            dist_ja[i] = std::vector<size_t>(MAX_POSSIBLE_NEIB);
+         }
+     }
+     // Fill vecs
+@@ -131,8 +132,10 @@ auto gen(
+             // NOTE: Define and count this here by parallel issues
+             // NOTE: In start of iteration we are always on square vertex
+             // Cur cell number and vertex type
+-            auto [c, t] = get_cell_n_type(v, k1, k2);
+-            size_t i = c / ny; // Cur cell row number
++            auto cell_res = get_cell_n_type(v, k1, k2);
++            auto c = std::get<0>(cell_res);
++            auto t = std::get<1>(cell_res);
++	    size_t i = c / ny; // Cur cell row number
+             size_t j = c % ny; // Cur cell col number
+             unsigned char neibs = 0; // Vertex neighbor number
+             switch (t) {
+@@ -199,7 +202,9 @@ auto gen(
+     }
+     auto end = omp_get_wtime();
+     auto t = end - start;
+-    return std::tuple(std::move(ia), std::move(ja), t);
++    return std::tuple<std::vector<size_t>, std::vector<size_t>, double>(
++	    std::move(ia), std::move(ja), t
++    );
+ }
+ 
+ inline float filler_i(size_t i) {
+@@ -219,7 +224,8 @@ inline float filler_ij(size_t i, size_t j) {
+  * * b - right side array
+  * * t - time
+  */
+-auto fill(
++std::tuple<std::vector<float>, std::vector<float>, double>
++fill(
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja
+ ) {
+@@ -247,7 +253,9 @@ auto fill(
+     }
+     auto end = omp_get_wtime();
+     auto t = end - start;
+-    return std::tuple(std::move(a), std::move(b), t);
++    return std::tuple<std::vector<float>, std::vector<float>, double>(
++        std::move(a), std::move(b), t
++    );
+ }
+ 
+ /* Get CSR reverse diagonal matrix of given one
+@@ -260,7 +268,8 @@ auto fill(
+  * * jm - col CSR result array
+  * * m - val CSR result array
+  */
+-auto get_inverse_diag_m(
++std::tuple<std::vector<size_t>, std::vector<size_t>, std::vector<float>>
++get_inverse_diag_m(
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+     std::vector<float>& a
+@@ -285,7 +294,9 @@ auto get_inverse_diag_m(
+         }
+     }
+     im[size] = size;
+-    return std::tuple(std::move(im), std::move(jm), std::move(m));
++    return std::tuple<std::vector<size_t>, std::vector<size_t>, std::vector<float>>(
++        std::move(im), std::move(jm), std::move(m)
++    );
+ }
+ 
+ /* Compute scalar product of two vectors with equal sizes
+@@ -297,7 +308,8 @@ auto get_inverse_diag_m(
+  * * scalar product value
+  * * computing time
+  */
+-auto scalar(
++std::pair<float, double>
++scalar(
+     std::vector<float>& a,
+     std::vector<float>& b,
+     size_t n
+@@ -315,7 +327,7 @@ auto scalar(
+         sum += sum_private;
+     }
+     auto end = omp_get_wtime();
+-    return std::pair(sum, end - start);
++    return std::pair<float, double>(sum, end - start);
+ }
+ 
+ /* Store sum of two vectors with equal sizes (second with coef)
+@@ -329,7 +341,7 @@ auto scalar(
+  * # Return value:
+  * * computing time
+  */
+-auto sum_vvc(
++double sum_vvc(
+     std::vector<float>& res,
+     std::vector<float>& a,
+     std::vector<float>& b,
+@@ -359,7 +371,7 @@ auto sum_vvc(
+  * # Return value:
+  * * computing time
+  */
+-auto mul_mv(
++double mul_mv(
+     std::vector<float>& res,
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+@@ -392,8 +404,7 @@ float L2norm(
+     std::vector<float>& a,
+     size_t n
+ ) {
+-    auto [scal, _] = scalar(a, a, n);
+-    return std::sqrt(scal);
++    return std::sqrt(std::get<0>(scalar(a, a, n)));
+ }
+ 
+ /* Solve Ax=b system
+@@ -412,7 +423,13 @@ float L2norm(
+  * * r - residual
+  * * t - operation time tuple
+  */
+-auto solve(
++std::tuple<
++    std::vector<float>,
++    size_t,
++    std::vector<float>,
++    std::tuple<double, double, double, double>
++>
++solve(
+     size_t n,
+     std::vector<size_t>& ia,
+     std::vector<size_t>& ja,
+@@ -430,21 +447,28 @@ auto solve(
+     std::vector<float> z(n);
+     std::vector<float> p(n);
+     std::vector<float> q(n);
+-    auto [im, jm, m] = get_inverse_diag_m(ia, ja, a);
++    auto m_res = get_inverse_diag_m(ia, ja, a);
++    auto im = std::get<0>(m_res);
++    auto jm = std::get<1>(m_res);
++    auto m = std::get<2>(m_res);
+     float ro_prev = eps * eps + 1;
+     size_t k = 1;
+     auto start = omp_get_wtime();
+     for(; ro_prev > eps * eps && k < maxit; k++) {
+         auto z_mul_time = mul_mv(z, im, jm, m, r, n); // z = M^(-1) * r
+-        auto [ro, ro_scal_time] = scalar(r, z, n);
+-        if (k == 1) {
++        auto ro_scal_res = scalar(r, z, n);
++        auto ro = std::get<0>(ro_scal_res);
++        auto ro_scal_time = std::get<1>(ro_scal_res);
++	if (k == 1) {
+             p = z; // NOTE: not move!!!
+         } else {
+             float beta = ro / ro_prev;
+             sum_vvc(p, z, p, beta, n);
+         }
+         auto q_mul_time = mul_mv(q, ia, ja, a, p, n); // q = Ap
+-        auto [scal, scal_time] = scalar(p, q, n);
++        auto scal_res = scalar(p, q, n);
++        auto scal = std::get<0>(scal_res);
++        auto scal_time = std::get<1>(scal_res);
+         auto alpha = ro / scal;
+         auto x_add_time = sum_vvc(x, x, p, alpha, n);
+         auto r_add_time = sum_vvc(r, r, q, -alpha, n);
+@@ -462,8 +486,15 @@ auto solve(
+     }
+     auto end = omp_get_wtime();
+     auto time = end - start;
+-    auto t = std::tuple(time, total_scal_time, total_add_time, total_mul_time);
+-    return std::tuple(std::move(x), k, std::move(r), t);
++    auto t = std::tuple<double, double, double, double>(
++	time, total_scal_time, total_add_time, total_mul_time
++    );
++    return std::tuple<
++	std::vector<float>, size_t, std::vector<float>,
++        std::tuple<double, double, double, double>
++    >(
++	std::move(x), k, std::move(r), t
++    );
+ }
+ 
+ int main(int argc, char** argv) {
+@@ -500,16 +531,19 @@ int main(int argc, char** argv) {
+     if (ll >= InfoLog) {
+         std::cout << "Generating IA/JA..." << std::endl;
+     }
+-    auto [ia, ja, gen_time] = gen(nx, ny, k1, k2, ll);
++    auto gen_res = gen(nx, ny, k1, k2, ll);
++    auto ia = std::get<0>(gen_res);
++    auto ja = std::get<1>(gen_res);
++    auto gen_time = std::get<2>(gen_res);
+     if (ll >= ArrayLog) {
+         std::cout << "IA:\t";
+-        for (const auto val: ia) {
+-            std::cout << val << " ";
++        for (size_t i = 0; i < ia.size(); i++) {
++            std::cout << ia[i] << " ";
+         }
+         std::cout << std::endl;
+         std::cout << "JA:\t";
+-        for (const auto val: ja) {
+-            std::cout << val << " ";
++        for (size_t i = 0; i < ja.size(); i++) {
++            std::cout << ja[i] << " ";
+         }
+         std::cout << std::endl;
+     }
+@@ -521,16 +555,19 @@ int main(int argc, char** argv) {
+     if (ll >= InfoLog) {
+         std::cout << "Filling A/b..." << std::endl;
+     }
+-    auto [a, b, fill_time] = fill(ia, ja);
++    auto fill_res = fill(ia, ja);
++    auto a = std::get<0>(fill_res);
++    auto b = std::get<1>(fill_res);
++    auto fill_time = std::get<2>(fill_res);
+     if (ll >= ArrayLog) {
+         std::cout << "A:\t";
+-        for (const auto val: a) {
+-            std::cout << val << " ";
++        for (size_t i = 0; i < a.size(); i++) {
++            std::cout << a[i] << " ";
+         }
+         std::cout << std::endl;
+         std::cout << "b:\t";
+-        for (const auto val: b) {
+-            std::cout << val << " ";
++        for (size_t i = 0; i < b.size(); i++) {
++            std::cout << b[i] << " ";
+         }
+         std::cout << std::endl;
+     }
+@@ -543,16 +580,23 @@ int main(int argc, char** argv) {
+         std::cout << "Solving..." << std::endl;
+     }
+     size_t n = ia.size() - 1;
+-    auto [x, k, r, t] = solve(n, ia, ja, a, b, eps, maxit, ll);
++    auto solve_res = solve(n, ia, ja, a, b, eps, maxit, ll);
++    auto x = std::get<0>(solve_res);
++    auto k = std::get<1>(solve_res);
++    auto r = std::get<2>(solve_res);
++    auto t = std::get<3>(solve_res);
+     if (ll >= ArrayLog) {
+         std::cout << "x:\t";
+-        for (const auto val: x) {
+-            std::cout << val << " ";
++        for (size_t i = 0; i < x.size(); i++) {
++            std::cout << x[i] << " ";
+         }
+         std::cout << std::endl;
+     }
+     if (ll >= TimeLog) {
+-        auto [solve_time, scal_time, add_time, mul_time] = t;
++	auto solve_time = std::get<0>(t);
++	auto scal_time = std::get<1>(t);
++	auto add_time = std::get<2>(t);
++	auto mul_time = std::get<3>(t);
+         std::cout << "Solve time:\t" << solve_time << std::endl;
+         std::cout << "Scalar total time:\t" << scal_time << "\t\t";
+         std::cout << "Scalar avarage time:\t" << scal_time / k << "\n";
