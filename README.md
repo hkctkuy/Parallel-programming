@@ -45,7 +45,7 @@ MPI_Scan, если все процессы выдали эту операцию 
 
 # Решения задач курса "Параллельные (высокопроизводительные) вычисления"
 
-5) Сгенерировать портрета разреженной матрицы на основе сетки (вариант Б2),
+5) Сгенерировать портрет разреженной матрицы на основе сетки (вариант Б2),
 посторить СЛАУ по полученному портрету и решить алгоритмом предобусловленного
 метода CG, распараллелить средствами openMP.
 
@@ -79,4 +79,41 @@ MPI_Scan, если все процессы выдали эту операцию 
 указанными размерностями, модифицируя его под свои нужды:
 
 	$ ./run.sh 4000 4000 1
+
+6) Сгенерировать портрет разреженной матрицы на основе сетки (вариант Б2),
+посторить СЛАУ по полученному портрету и решить алгоритмом предобусловленного
+метода CG, распараллелить средствами MPI.
+
+Сборка:
+
+	$ make
+
+Для успешной работы на Полюсе можно использовать следующий патч, заменяющий
+`clang++` на `g++` и `c++17` на `c++11`:
+
+	$ git apply polus.patch
+
+Опции:
+
+    $ ./solver 
+    $ Usage: ./solver Nx Ny K1 K2 Px Py Maxit Eps Tn Ll
+    $ Where:
+    $ Nx is positive int that represents grid hieght
+    $ Ny is positive int that represents grid width
+    $ K1 is positive int that represents square cells sequence length
+    $ K2 is positive int that represents triangular cells sequence length
+    $ Px is positive int that represents x axis decomposition param
+    $ Py is positive int that represents y axis decomposition param
+    $ Maxit is positive int that represents maximum iteration number
+    $ Eps is positive float that represents accuracy
+    $ Tn is tread numberLl is log level:
+    $     <=0 - no logs
+    $     >=1 - show time
+    $     >=2 - show arrays
+    $     >=3 - show info
+
+Для измерения параллельного ускорения можно использовать готовый скрипт с
+указанными размерностями, модифицируя его под свои нужды:
+
+	$ ./run.sh
 
