@@ -1,0 +1,58 @@
+diff --git a/7-hyperbolic-part-diff-eq-omp/Makefile b/7-hyperbolic-part-diff-eq-omp/Makefile
+index 14ce4e7..c3b89ce 100644
+--- a/7-hyperbolic-part-diff-eq-omp/Makefile
++++ b/7-hyperbolic-part-diff-eq-omp/Makefile
+@@ -1,6 +1,6 @@
+-CC       = clang++
+-OMPFLAGS = -fopenmp=libiomp5
+-CFLAGS	 = $(OMPFLAGS) -std=c++20 -g -I/usr/lib/gcc/x86_64-linux-gnu/11/include
++CC       = g++
++OMPFLAGS = -fopenmp
++CFLAGS	 = $(OMPFLAGS) -std=c++11 -g -I/usr/lib/gcc/x86_64-linux-gnu/11/include
+ LDFLAGS  = $(OMPFLAGS)
+ 
+ SOURCES     = solver.cc
+diff --git a/7-hyperbolic-part-diff-eq-omp/solver.cc b/7-hyperbolic-part-diff-eq-omp/solver.cc
+index 5489af7..4553990 100644
+--- a/7-hyperbolic-part-diff-eq-omp/solver.cc
++++ b/7-hyperbolic-part-diff-eq-omp/solver.cc
+@@ -150,7 +150,7 @@ private:
+         }
+     } phi_;
+ 
+-    inline auto diff(
++    inline value_type diff(
+         Grid4D<value_type>& u, size_type i, size_type j, size_type k, size_type n
+     ) const noexcept {
+         return std::abs(u_analytical_(i, j, k, n) - u(i, j, k, n));
+@@ -165,7 +165,7 @@ public:
+         u_analytical_(L, h_, t_), phi_(u_analytical_)
+     {}
+ 
+-    auto solve() const noexcept {
++    std::tuple<Grid4D<value_type>, value_type, value_type> solve() const noexcept {
+         Grid4D<value_type> u(N_, K_);
+         value_type error = 0;
+         auto start = omp_get_wtime();
+@@ -282,7 +282,7 @@ public:
+         }
+         auto end = omp_get_wtime();
+         auto time = end - start;
+-        return std::tuple(std::move(u), error, time);
++        return std::tuple<Grid4D<value_type>, value_type, value_type>(std::move(u), error, time);
+     }
+ };
+ 
+@@ -301,8 +301,10 @@ int main(int argc, char** argv) {
+         std::cout << "L = " << L << " "
+                   << "N = " << N << " "
+                   << "K = " << K << std::endl;
+-        auto solver = Solver(L, N, K);
+-        auto [_, err, time] = solver.solve();
++        auto solver = Solver<double>(L, N, K);
++        auto t = solver.solve();
++        auto err  = std::get<1>(t);
++        auto time = std::get<2>(t);
+         std::cout << "Err:  " << err  << std::endl
+                   << "Time: " << time << std::endl
+                   << std::endl;
