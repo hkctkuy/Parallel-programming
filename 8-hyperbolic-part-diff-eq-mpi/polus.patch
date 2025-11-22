@@ -1,0 +1,109 @@
+diff --git a/8-hyperbolic-part-diff-eq-mpi/Makefile b/8-hyperbolic-part-diff-eq-mpi/Makefile
+index 302e057..2079a4b 100644
+--- a/8-hyperbolic-part-diff-eq-mpi/Makefile
++++ b/8-hyperbolic-part-diff-eq-mpi/Makefile
+@@ -1,9 +1,9 @@
+ CXX			= mpic++
+-OMPI_CC		= clang
+-OMPI_CXX	= clang++
++OMPI_CC		= gcc
++OMPI_CXX	= g++
+ OMPFLAGS	= -fopenmp
+ SANFLAGS 	= -fsanitize=address,integer,bounds,null,undefined,float-divide-by-zero
+-CXXFLAGS	= $(OMPFLAGS) -std=c++20
++CXXFLAGS	= $(OMPFLAGS) -std=c++11
+ LDFLAGS 	= $(OMPFLAGS)
+ 
+ SOURCES     = solver.cc
+diff --git a/8-hyperbolic-part-diff-eq-mpi/solver.cc b/8-hyperbolic-part-diff-eq-mpi/solver.cc
+index f04ca0e..8c8aed9 100644
+--- a/8-hyperbolic-part-diff-eq-mpi/solver.cc
++++ b/8-hyperbolic-part-diff-eq-mpi/solver.cc
+@@ -304,7 +304,7 @@ private:
+         }
+     } phi_;
+ 
+-    inline auto diff(
++    inline value_type diff(
+         Grid4D<value_type>& u, size_type i, size_type j, size_type k, size_type n
+     ) const noexcept {
+         return std::abs(u_analytical_(i, j, k, n) - u(i, j, k, n));
+@@ -491,7 +491,7 @@ public:
+         u_analytical_(L, h_, t_, bx, by, bz), phi_(u_analytical_),
+         ccomm_(ccomm), communicatables_(ccomm.get_communicatables()) {}
+ 
+-    auto solve() noexcept {
++    std::tuple<Grid4D<value_type>, value_type, value_type> solve() noexcept {
+         Grid4D<value_type> u(Nx_, Ny_, Nz_, K_);
+         value_type error = 0;
+         auto start = omp_get_wtime();
+@@ -656,7 +656,7 @@ public:
+         MPI_Reduce(&error, &global_error, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+         value_type global_time;
+         MPI_Reduce(&time, &global_time, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+-        return std::tuple(std::move(u), global_error, global_time);
++        return std::tuple<Grid4D<value_type>, value_type, value_type>(std::move(u), global_error, global_time);
+     }
+ };
+ 
+@@ -681,21 +681,21 @@ private:
+     rank_type pr_;
+ 
+     // Get rank begin index and size on grid axis
+-    auto get_grid_axis_parms(size_type N, rank_type pn, rank_type pr) const noexcept {
++    std::tuple<size_type, size_type> get_grid_axis_parms(size_type N, rank_type pn, rank_type pr) const noexcept {
+         size_type d = (N + 1) / pn;
+         size_type m = (N + 1) % pn;
+         size_type b = pr * d + std::min<size_type>(pr, m);
+         size_type n = d + (pr < m ? 1 : 0) - 1;
+-        return std::tuple(b, n);
++        return std::tuple<size_type, size_type>(b, n);
+     }
+ 
+-    inline auto get_rank(
++    inline rank_type get_rank(
+         rank_type rx, rank_type ry, rank_type rz
+     ) const noexcept {
+         return (rx * py_ + ry) * pz_ + rz;
+     }
+ 
+-    auto make_communicator(
++    CubeCommunicator<T> make_communicator(
+         rank_type rx, rank_type ry, rank_type rz,
+         size_type Nx, size_type Ny, size_type Nz
+     ) {
+@@ -809,11 +809,17 @@ public:
+         rank_type rz = (pr_ % pz_);
+         rank_type ry = (pr_ / pz_) % py_;
+         rank_type rx = (pr_ / pz_) / py_;
+-        auto [bx, Nx] = get_grid_axis_parms(N_, px_, rx);
+-        auto [by, Ny] = get_grid_axis_parms(N_, py_, ry);
+-        auto [bz, Nz] = get_grid_axis_parms(N_, pz_, rz);
++        auto tx = get_grid_axis_parms(N_, px_, rx);
++        auto bx = std::get<0>(tx);
++        auto Nx = std::get<1>(tx);
++        auto ty = get_grid_axis_parms(N_, py_, ry);
++        auto by = std::get<0>(ty);
++        auto Ny = std::get<1>(ty);
++        auto tz = get_grid_axis_parms(N_, pz_, rz);
++        auto bz = std::get<0>(tz);
++        auto Nz = std::get<1>(tz);
+         auto ccomm = make_communicator(rx, ry, rz, Nx, Ny, Nz);
+-        return Solver(L_, N_, K_, Nx, Ny, Nz, bx, by, bz, ccomm);
++        return Solver<value_type>(L_, N_, K_, Nx, Ny, Nz, bx, by, bz, ccomm);
+     }
+ };
+ 
+@@ -864,8 +870,10 @@ int main(int argc, char** argv) {
+                       << "N = " << N << " "
+                       << "K = " << K << "\n";
+         }
+-        auto solver = SolverFactory(L, N, K, px, py, pz, pn, pr).make_solver();
+-        auto [_, err, time] = solver.solve();
++        auto solver = SolverFactory<double>(L, N, K, px, py, pz, pn, pr).make_solver();
++        auto t = solver.solve();
++        auto err = std::get<1>(t);
++        auto time = std::get<2>(t);
+         if (pr == 0) {
+             std::cout << "Err:  " << err  << "\n"
+                       << "Time: " << time << "\n"
