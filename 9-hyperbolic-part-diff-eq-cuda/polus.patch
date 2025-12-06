@@ -1,0 +1,833 @@
+diff --git a/9-hyperbolic-part-diff-eq-cuda/Makefile b/9-hyperbolic-part-diff-eq-cuda/Makefile
+index e6cf72f..5d63c86 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/Makefile
++++ b/9-hyperbolic-part-diff-eq-cuda/Makefile
+@@ -3,8 +3,8 @@ ARCH 	  	   ?= sm_60
+ BUILD_TYPE	   ?= Release
+ 
+ # Compilers
+-CC				= clang
+-CXX				= clang++
++CC				= gcc
++CXX				= g++
+ MPI_CC			= mpicc
+ MPI_CXX			= mpic++
+ MPI_HOST		= OMPI_CC=$(CC) OMPI_CXX=$(CXX)
+@@ -12,14 +12,13 @@ HOST_COMP 	   ?= $(MPI_CXX)
+ NVCC			= nvcc
+ 
+ # Flags
+-STD				= -std=c++20
++STD				= -std=c++11
+ CUDAFLAGS		= -lcudart
+ OMPFLAGS		= -fopenmp
+-SANFLAGS		= -fsanitize=address,integer,bounds,null,undefined,float-divide-by-zero
+ CXXFLAGS		= $(STD) -MMD -MP $(OMPFLAGS) -Wno-macro-redefined
+ 
+ ifeq ($(BUILD_TYPE), Debug)
+-  CXXFLAGS     += $(SANFLAGS) -O0 -g -DDEBUG
++  CXXFLAGS     += -O0 -g -DDEBUG
+ else
+   CXXFLAGS     += -O3
+ endif
+diff --git a/9-hyperbolic-part-diff-eq-cuda/communicator.hpp b/9-hyperbolic-part-diff-eq-cuda/communicator.hpp
+index c2de687..61940ba 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/communicator.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/communicator.hpp
+@@ -133,7 +133,7 @@ public:
+     const Comm& operator[](Edge edge) const noexcept;
+     bool contains(Edge edge) const noexcept;
+ 
+-    auto get_communicatables() const noexcept;
++    Communicatables get_communicatables() const noexcept;
+ 
+     /*
+      * Special Device View for Cube Communicator
+@@ -148,10 +148,6 @@ public:
+         DeviceView up;
+     };
+ 
+-    // Check DeviceView triviality
+-    static_assert(std::is_trivially_copyable_v<CommDeviceView> == true);
+-    static_assert(std::is_standard_layout_v<CommDeviceView> == true);
+-
+ private:
+     /*
+      * Special Device Pool for Cube Communicator
+@@ -161,7 +157,7 @@ private:
+         const Edges& edges_;
+         const Comms& comms_;
+ 
+-        auto view(Edge edge) const noexcept;
++        DeviceView view(Edge edge) const noexcept;
+ 
+     public:
+         CommDevicePoolManager(const Edges& edges, const Comms& comms);
+@@ -169,7 +165,7 @@ private:
+         // NOTE: No need to load data back from GPU
+         void to_gpu();
+ 
+-        auto view() const noexcept;
++        CommDeviceView view() const noexcept;
+     };
+ 
+     std::shared_ptr<CommDevicePoolManager> dm_ = nullptr;
+@@ -190,7 +186,7 @@ public:
+         dm_->to_gpu();
+     }
+ 
+-    auto view() const noexcept {
++    CommDeviceView view() const noexcept {
+         if (!dm_) {
+             return CommDeviceView {
+                 DeviceView(), DeviceView(), DeviceView(),
+diff --git a/9-hyperbolic-part-diff-eq-cuda/communicator.tpp b/9-hyperbolic-part-diff-eq-cuda/communicator.tpp
+index 29a3530..ccfb8fa 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/communicator.tpp
++++ b/9-hyperbolic-part-diff-eq-cuda/communicator.tpp
+@@ -113,7 +113,8 @@ bool CubeCommunicator<T>::contains(Edge edge) const noexcept {
+ }
+ 
+ template <typename T>
+-auto CubeCommunicator<T>::get_communicatables() const noexcept {
++Communicatables
++CubeCommunicator<T>::get_communicatables() const noexcept {
+     Communicatables communicatables;
+     for (auto edge: all_edges) {
+         communicatables[edge] = contains(edge);
+@@ -145,12 +146,14 @@ void CubeCommunicator<T>::CommDevicePoolManager::to_gpu() {
+ }
+ 
+ template <typename T>
+-auto CubeCommunicator<T>::CommDevicePoolManager::view(Edge edge) const noexcept {
++typename CubeCommunicator<T>::DeviceView
++CubeCommunicator<T>::CommDevicePoolManager::view(Edge edge) const noexcept {
+     return pools_[edge] != nullptr ? pools_[edge]->view() : DeviceView();
+ }
+ 
+ template <typename T>
+-auto CubeCommunicator<T>::CommDevicePoolManager::view() const noexcept {
++typename CubeCommunicator<T>::CommDeviceView
++CubeCommunicator<T>::CommDevicePoolManager::view() const noexcept {
+     return CommDeviceView {
+         view(Edge::Left ),
+         view(Edge::Right),
+diff --git a/9-hyperbolic-part-diff-eq-cuda/cpu.hpp b/9-hyperbolic-part-diff-eq-cuda/cpu.hpp
+index dfe693e..5645e00 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/cpu.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/cpu.hpp
+@@ -11,49 +11,103 @@ namespace cpu {
+ template<typename T = double>
+ class CPUSolverImpl: public Solver<T> {
+ public:
+-    using Solver = Solver<T>;
+-    using value_type = typename Solver::value_type;
+-    using size_type = typename Solver::size_type;
+-    using rank_type = typename Solver::rank_type;
+-    using Grid = typename Solver::Grid;
+-    using Time = typename Solver::Time;
++    using value_type = typename Solver<T>::value_type;
++    using size_type = typename Solver<T>::size_type;
++    using rank_type = typename Solver<T>::rank_type;
++    using Grid = typename Solver<T>::Grid;
++    using Time = typename Solver<T>::Time;
+ 
+ private:
+     // Bring base class members into scope
+-    using Solver::c_;
+-    using Solver::Nx_;
+-    using Solver::Ny_;
+-    using Solver::Nz_;
+-    using Solver::boundary_;
+-    using Solver::phi_;
+-    using Solver::ccomm_;
+-    using Solver::communicatables_;
++    using Solver<T>::c_;
++    using Solver<T>::Nx_;
++    using Solver<T>::Ny_;
++    using Solver<T>::Nz_;
++    using Solver<T>::boundary_;
++    using Solver<T>::phi_;
++    using Solver<T>::ccomm_;
++    using Solver<T>::communicatables_;
+     // Methods
+-    using Solver::diff;
+-    using Solver::is_inner_node;
+-    using Solver::is_boundary_node;
++    using Solver<T>::diff;
++    using Solver<T>::is_inner_node;
++    using Solver<T>::is_boundary_node;
+ 
+     // Choosing function helper
+-    template <bool initial>
+-    inline auto func_helper(
++    template <bool initial, typename std::enable_if<initial, int>::type = 0>
++    inline value_type func_helper(
+         const Grid& u, size_type i, size_type j, size_type k, size_type n
+-    ) const noexcept;
++    ) const noexcept {
++        return phi_(i, j, k);
++    }
++
++    template <bool initial, typename std::enable_if<!initial, int>::type = 0>
++    inline value_type func_helper(
++        const Grid& u, size_type i, size_type j, size_type k, size_type n
++    ) const noexcept {
++        return u(i, j, k, n);
++    }
+ 
+     // Node calculation helper
+-    template <bool initial, bool inner>
+-    inline auto calc_node_helper(
++    template <bool initial, bool inner = true,
++              typename std::enable_if<inner, int>::type = 0>
++    inline value_type calc_node_helper(
+         const Grid& u, size_type i, size_type j, size_type k, size_type n
+-    ) const noexcept;
++    ) const noexcept {
++        // Side nodes
++        value_type left, right, back, front, down, up;
++        left  = func_helper<initial>(u, i - 1, j, k, n);
++        right = func_helper<initial>(u, i + 1, j, k, n);
++        back  = func_helper<initial>(u, i, j - 1, k, n);
++        front = func_helper<initial>(u, i, j + 1, k, n);
++        down  = func_helper<initial>(u, i, j, k - 1, n);
++        up    = func_helper<initial>(u, i, j, k + 1, n);
++        return -6 * func_helper<initial>(u, i, j, k, n)
++               + left + right + back + front + down + up;
++    }
++
++    template <bool initial, bool inner = true,
++              typename std::enable_if<!inner, int>::type = 0>
++    inline value_type calc_node_helper(
++        const Grid& u, size_type i, size_type j, size_type k, size_type n
++    ) const noexcept {
++        // Side nodes
++        value_type left, right, back, front, down, up;
++        // Believe to loop unrolling...
++        left  = (i == 0)
++              ? ccomm_[comm::Edge::Left ](j, k)
++              : func_helper<initial>(u, i - 1, j, k, n);
++        right = (i == Nx_)
++              ? ccomm_[comm::Edge::Right](j, k)
++              : func_helper<initial>(u, i + 1, j, k, n);
++        down  = (k == 0)
++              ? ccomm_[comm::Edge::Down ](i, j)
++              : func_helper<initial>(u, i, j, k - 1, n);
++        up    = (k == Nz_)
++              ? ccomm_[comm::Edge::Up   ](i, j)
++              : func_helper<initial>(u, i, j, k + 1, n);
++        back  = (j == 0)
++              ? communicatables_[comm::Edge::Back]
++              ? ccomm_[comm::Edge::Back](i, k)
++              : func_helper<initial>(u, i, Ny_ - 1, k, n)
++              : func_helper<initial>(u, i, j   - 1, k, n);
++        front = (j == Ny_)
++              ? communicatables_[comm::Edge::Front]
++              ? ccomm_[comm::Edge::Front](i, k)
++              : func_helper<initial>(u, i,       1, k, n)
++              : func_helper<initial>(u, i, j   + 1, k, n);
++        return -6 * func_helper<initial>(u, i, j, k, n)
++               + left + right + back + front + down + up;
++    }
+ 
+     // Calculate ordinary node
+     template <bool inner>
+-    inline auto calc_node(
++    inline value_type calc_node(
+         const Grid& u, size_type i, size_type j, size_type k, size_type n
+     ) const noexcept;
+ 
+     // Calculate phi node
+     template <bool inner>
+-    inline auto calc_phi_node(
++    inline value_type calc_phi_node(
+         const Grid& u, size_type i, size_type j, size_type k
+     ) const noexcept;
+ 
+@@ -76,7 +130,7 @@ public:
+         size_type bx, size_type by, size_type bz,
+         comm::CubeCommunicator<value_type> ccomm
+     ):
+-        Solver(L, N, K, Nx, Ny, Nz, bx, by, bz, ccomm) {}
++        Solver<T>(L, N, K, Nx, Ny, Nz, bx, by, bz, ccomm) {}
+ };
+ 
+ } // namespace cpu
+diff --git a/9-hyperbolic-part-diff-eq-cuda/cpu.tpp b/9-hyperbolic-part-diff-eq-cuda/cpu.tpp
+index 1356301..f4f11e3 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/cpu.tpp
++++ b/9-hyperbolic-part-diff-eq-cuda/cpu.tpp
+@@ -3,64 +3,10 @@
+ namespace solver {
+ namespace cpu {
+ 
+-template <typename T>
+-template <bool initial>
+-inline auto CPUSolverImpl<T>::func_helper(
+-    const Grid& u, size_type i, size_type j, size_type k, size_type n
+-) const noexcept {
+-    if constexpr (initial) {
+-        return phi_(i, j, k);
+-    } else {
+-        return u(i, j, k, n);
+-    }
+-}
+-
+-template <typename T>
+-template <bool initial, bool inner>
+-inline auto CPUSolverImpl<T>::calc_node_helper(
+-    const Grid& u, size_type i, size_type j, size_type k, size_type n
+-) const noexcept {
+-    // Side nodes
+-    value_type left, right, back, front, down, up;
+-    if constexpr (inner) {
+-        left  = func_helper<initial>(u, i - 1, j, k, n);
+-        right = func_helper<initial>(u, i + 1, j, k, n);
+-        back  = func_helper<initial>(u, i, j - 1, k, n);
+-        front = func_helper<initial>(u, i, j + 1, k, n);
+-        down  = func_helper<initial>(u, i, j, k - 1, n);
+-        up    = func_helper<initial>(u, i, j, k + 1, n);
+-    } else {
+-        // Believe to loop unrolling...
+-        left  = (i == 0)
+-              ? ccomm_[comm::Edge::Left ](j, k)
+-              : func_helper<initial>(u, i - 1, j, k, n);
+-        right = (i == Nx_)
+-              ? ccomm_[comm::Edge::Right](j, k)
+-              : func_helper<initial>(u, i + 1, j, k, n);
+-        down  = (k == 0)
+-              ? ccomm_[comm::Edge::Down ](i, j)
+-              : func_helper<initial>(u, i, j, k - 1, n);
+-        up    = (k == Nz_)
+-              ? ccomm_[comm::Edge::Up   ](i, j)
+-              : func_helper<initial>(u, i, j, k + 1, n);
+-        back  = (j == 0)
+-              ? communicatables_[comm::Edge::Back]
+-              ? ccomm_[comm::Edge::Back](i, k)
+-              : func_helper<initial>(u, i, Ny_ - 1, k, n)
+-              : func_helper<initial>(u, i, j   - 1, k, n);
+-        front = (j == Ny_)
+-              ? communicatables_[comm::Edge::Front]
+-              ? ccomm_[comm::Edge::Front](i, k)
+-              : func_helper<initial>(u, i,       1, k, n)
+-              : func_helper<initial>(u, i, j   + 1, k, n);
+-    }
+-    return -6 * func_helper<initial>(u, i, j, k, n)
+-           + left + right + back + front + down + up;
+-}
+-
+ template <typename T>
+ template <bool inner>
+-inline auto CPUSolverImpl<T>::calc_node(
++inline typename CPUSolverImpl<T>::value_type
++CPUSolverImpl<T>::calc_node(
+     const Grid& u, size_type i, size_type j, size_type k, size_type n
+ ) const noexcept {
+     auto tmp = calc_node_helper<false, inner>(u, i, j, k, n);
+@@ -69,7 +15,8 @@ inline auto CPUSolverImpl<T>::calc_node(
+ 
+ template <typename T>
+ template <bool inner>
+-inline auto CPUSolverImpl<T>::calc_phi_node(
++inline typename CPUSolverImpl<T>::value_type
++CPUSolverImpl<T>::calc_phi_node(
+     const Grid& u, size_type i, size_type j, size_type k
+ ) const noexcept {
+     auto tmp = calc_node_helper<true, inner>(u, i, j, k, 0);
+diff --git a/9-hyperbolic-part-diff-eq-cuda/device.hpp b/9-hyperbolic-part-diff-eq-cuda/device.hpp
+index 56fe4d2..4972aac 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/device.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/device.hpp
+@@ -81,10 +81,15 @@ public:
+     }
+ 
+     // Roll queue, alloc memory if needed
+-    void roll() noexcept {
+-        if constexpr (queue_size == 1) {
+-            return;
+-        }
++    template <size_t Q = queue_size>
++    typename std::enable_if<Q == 1, void>::type
++    roll() noexcept {
++        return;
++    }
++
++    template <size_t Q = queue_size>
++    typename std::enable_if<Q != 1, void>::type
++    roll() noexcept {
+         // Ring buffer head update
+         head_ = (head_ + 1) % queue_size;
+         if (d_ptr_storage_[head_] == nullptr) {
+@@ -167,10 +172,6 @@ public:
+         }
+     };
+ 
+-    // Check DeviceView triviality
+-    static_assert(std::is_trivially_copyable_v<DeviceView> == true);
+-    static_assert(std::is_standard_layout_v<DeviceView> == true);
+-
+     DeviceView view() const noexcept {
+         T* queue[queue_size];
+         for (size_t i = 0; i < queue_size; i++) {
+diff --git a/9-hyperbolic-part-diff-eq-cuda/factory.hpp b/9-hyperbolic-part-diff-eq-cuda/factory.hpp
+index 119ae1b..041609c 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/factory.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/factory.hpp
+@@ -13,13 +13,11 @@ namespace solver {
+ template<typename T = double>
+ class SolverFactory {
+ public:
+-    using Solver = Solver<T>;
++    using value_type = typename Solver<T>::value_type;
++    using size_type = typename Solver<T>::size_type;
++    using rank_type = typename Solver<T>::rank_type;
+ 
+-    using value_type = typename Solver::value_type;
+-    using size_type = typename Solver::size_type;
+-    using rank_type = typename Solver::rank_type;
+-
+-    using CComm = typename Solver::CComm;
++    using CComm = typename Solver<T>::CComm;
+     using Comm = typename CComm::Comm;
+     using Comms = typename CComm::Comms;
+ 
+@@ -36,10 +34,13 @@ private:
+     bool gpu_;
+ 
+     // Get rank begin index and size on grid axis
+-    auto get_grid_axis_parms(size_type N, rank_type pn, rank_type pr) const noexcept;
+-    inline auto get_rank(rank_type rx, rank_type ry, rank_type rz) const noexcept;
++    std::tuple<size_type, size_type> get_grid_axis_parms(
++        size_type N, rank_type pn, rank_type pr
++    ) const noexcept;
++
++    inline rank_type get_rank(rank_type rx, rank_type ry, rank_type rz) const noexcept;
+ 
+-    auto make_communicator(
++    CComm make_communicator(
+         rank_type rx, rank_type ry, rank_type rz,
+         size_type Nx, size_type Ny, size_type Nz
+     );
+@@ -52,7 +53,7 @@ public:
+         bool gpu = false
+     );
+ 
+-    std::shared_ptr<Solver> make_solver();
++    std::shared_ptr<Solver<T>> make_solver();
+ };
+ 
+ } // namespace solver
+diff --git a/9-hyperbolic-part-diff-eq-cuda/factory.tpp b/9-hyperbolic-part-diff-eq-cuda/factory.tpp
+index 7b9179f..7108bb9 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/factory.tpp
++++ b/9-hyperbolic-part-diff-eq-cuda/factory.tpp
+@@ -11,25 +11,31 @@
+ namespace solver {
+ 
+ template <typename T>
+-auto SolverFactory<T>::get_grid_axis_parms(
++std::tuple<
++    typename SolverFactory<T>::size_type,
++    typename SolverFactory<T>::size_type
++>
++SolverFactory<T>::get_grid_axis_parms(
+     size_type N, rank_type pn, rank_type pr
+ ) const noexcept {
+     size_type d = (N + 1) / pn;
+     size_type m = (N + 1) % pn;
+     size_type b = pr * d + std::min<size_type>(pr, m);
+     size_type n = d + (pr < m ? 1 : 0) - 1;
+-    return std::tuple(b, n);
++    return std::tuple<size_type, size_type>(b, n);
+ }
+ 
+ template <typename T>
+-inline auto SolverFactory<T>::get_rank(
++inline typename SolverFactory<T>::rank_type
++SolverFactory<T>::get_rank(
+     rank_type rx, rank_type ry, rank_type rz
+ ) const noexcept {
+     return (rx * py_ + ry) * pz_ + rz;
+ }
+ 
+ template <typename T>
+-auto SolverFactory<T>::make_communicator(
++typename SolverFactory<T>::CComm
++SolverFactory<T>::make_communicator(
+     rank_type rx, rank_type ry, rank_type rz,
+     size_type Nx, size_type Ny, size_type Nz
+ ) {
+@@ -121,7 +127,7 @@ auto SolverFactory<T>::make_communicator(
+         }
+         comms[comm::Edge::Up] = std::make_shared<Comm>(comm);
+     }
+-    return comm::CubeCommunicator<value_type>(comms);
++    return CComm(comms);
+ }
+ 
+ template <typename T>
+@@ -141,20 +147,30 @@ SolverFactory<T>::SolverFactory(
+ }
+ 
+ template <typename T>
+-typename std::shared_ptr<typename SolverFactory<T>::Solver>
++typename std::shared_ptr<Solver<T>>
+ SolverFactory<T>::make_solver() {
+     // Axis ranks
+     rank_type rz = (pr_ % pz_);
+     rank_type ry = (pr_ / pz_) % py_;
+     rank_type rx = (pr_ / pz_) / py_;
+-    auto [bx, Nx] = get_grid_axis_parms(N_, px_, rx);
+-    auto [by, Ny] = get_grid_axis_parms(N_, py_, ry);
+-    auto [bz, Nz] = get_grid_axis_parms(N_, pz_, rz);
++    auto tx = get_grid_axis_parms(N_, px_, rx);
++    auto bx = std::get<0>(tx);
++    auto Nx = std::get<1>(tx);
++    auto ty = get_grid_axis_parms(N_, py_, ry);
++    auto by = std::get<0>(ty);
++    auto Ny = std::get<1>(ty);
++    auto tz = get_grid_axis_parms(N_, pz_, rz);
++    auto bz = std::get<0>(tz);
++    auto Nz = std::get<1>(tz);
+     auto ccomm = make_communicator(rx, ry, rz, Nx, Ny, Nz);
+-    if (!gpu_) {
+-        return std::make_unique<cpu::CPUSolverImpl<T>>(L_, N_, K_, Nx, Ny, Nz, bx, by, bz, ccomm);
++    if (gpu_) {
++        return std::unique_ptr<Solver<T>>(
++            new gpu::GPUSolverImpl<T>(L_, N_, K_, Nx, Ny, Nz, bx, by, bz, ccomm)
++        );
+     } else {
+-        return std::make_unique<gpu::GPUSolverImpl<T>>(L_, N_, K_, Nx, Ny, Nz, bx, by, bz, ccomm);
++        return std::unique_ptr<Solver<T>>(
++            new cpu::CPUSolverImpl<T>(L_, N_, K_, Nx, Ny, Nz, bx, by, bz, ccomm)
++        );
+     }
+ }
+ 
+diff --git a/9-hyperbolic-part-diff-eq-cuda/func.hpp b/9-hyperbolic-part-diff-eq-cuda/func.hpp
+index cf32d69..6c8f893 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/func.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/func.hpp
+@@ -45,10 +45,6 @@ public:
+ 
+ };
+ 
+-// Check triviality
+-static_assert(std::is_trivially_copyable_v<AnalyticalFunction<double>> == true);
+-static_assert(std::is_standard_layout_v<AnalyticalFunction<double>> == true);
+-
+ /*
+  * Problem boundary condition function
+  */
+@@ -63,10 +59,6 @@ public:
+     }
+ };
+ 
+-// Check triviality
+-static_assert(std::is_trivially_copyable_v<BoundaryFunction<double>> == true);
+-static_assert(std::is_standard_layout_v<BoundaryFunction<double>> == true);
+-
+ /*
+  * Analytical Function View as Grid
+  * template class Function heed to have Function::value_type type and operator()
+@@ -99,7 +91,7 @@ public:
+         FunctionGridView(F, h, h, h, t, bx, by, bz, bt) {}
+ 
+     __host__ __device__
+-    auto operator()(
++    value_type operator()(
+         size_type i, size_type j, size_type k, size_type n
+     ) const noexcept {
+         return f_(
+@@ -111,9 +103,5 @@ public:
+     }
+ };
+ 
+-// Check triviality
+-static_assert(std::is_trivially_copyable_v<FunctionGridView<AnalyticalFunction<double>, size_t>> == true);
+-static_assert(std::is_standard_layout_v<FunctionGridView<AnalyticalFunction<double>, size_t>> == true);
+-
+ } // namespace func
+ } // namespace solver
+diff --git a/9-hyperbolic-part-diff-eq-cuda/gpu.hpp b/9-hyperbolic-part-diff-eq-cuda/gpu.hpp
+index ba18040..579c1a0 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/gpu.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/gpu.hpp
+@@ -16,28 +16,26 @@ namespace gpu {
+ template<typename T = double>
+ class GPUSolverImpl: public Solver<T> {
+ public:
+-    using Solver = Solver<T>;
++    using value_type = typename Solver<T>::value_type;
++    using size_type = typename Solver<T>::size_type;
++    using rank_type = typename Solver<T>::rank_type;
+ 
+-    using value_type = typename Solver::value_type;
+-    using size_type = typename Solver::size_type;
+-    using rank_type = typename Solver::rank_type;
++    using Grid = typename Solver<T>::Grid;
++    using Time = typename Solver<T>::Time;
+ 
+-    using Grid = typename Solver::Grid;
+-    using Time = typename Solver::Time;
++    using InitialGridView = typename Solver<T>::InitialGridView;
++    using BoundaryGridView = typename Solver<T>::BoundaryGridView;
++    using AnalyticalGridView = typename Solver<T>::AnalyticalGridView;
+ 
+-    using InitialGridView = typename Solver::InitialGridView;
+-    using BoundaryGridView = typename Solver::BoundaryGridView;
+-    using AnalyticalGridView = typename Solver::AnalyticalGridView;
+-
+-    using CComm = typename Solver::CComm;
++    using CComm = typename Solver<T>::CComm;
+ 
+     using DevicePoolManager = typename device::DevicePoolManager<value_type, size_type>;
+ 
+ private:
+     // Bring base class members into scope
+-    using Solver::c_;
+-    using Solver::ccomm_;
+-    using Solver::communicatables_;
++    using Solver<T>::c_;
++    using Solver<T>::ccomm_;
++    using Solver<T>::communicatables_;
+ 
+     // Error Device Pool
+     DevicePoolManager edm_;
+@@ -71,7 +69,7 @@ public:
+         dim3 block;
+         dim3 grid;
+ 
+-        __device__ inline auto diff(
++        __device__ inline value_type diff(
+             typename Grid::DeviceView& u,
+             size_type i, size_type j, size_type k, size_type n
+         ) const noexcept;
+@@ -85,11 +83,7 @@ public:
+         ) const noexcept;
+     };
+ 
+-    // Check AnalyticalFunction triviality
+-    static_assert(std::is_trivially_copyable_v<View> == true);
+-    static_assert(std::is_standard_layout_v<View> == true);
+-
+-    auto view() const noexcept;
++    View view() const noexcept;
+ 
+     GPUSolverImpl(
+         value_type L, size_type N, size_type K,
+@@ -97,7 +91,7 @@ public:
+         size_type bx, size_type by, size_type bz,
+         CComm ccomm
+     ):
+-        Solver(L, N, K, Nx, Ny, Nz, bx, by, bz, ccomm),
++        Solver<T>(L, N, K, Nx, Ny, Nz, bx, by, bz, ccomm),
+         edm_(Nx + 1, Ny + 1, Nz + 1) {}
+ 
+ };
+diff --git a/9-hyperbolic-part-diff-eq-cuda/gpu.tpp b/9-hyperbolic-part-diff-eq-cuda/gpu.tpp
+index e8f0d8e..e0f48d6 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/gpu.tpp
++++ b/9-hyperbolic-part-diff-eq-cuda/gpu.tpp
+@@ -51,7 +51,8 @@ void GPUSolverImpl<T>::calc_boundary_nodes(Grid& u, size_type n, Time& t, value_
+ }
+ 
+ template <typename T>
+-__device__ inline auto GPUSolverImpl<T>::View::diff(
++__device__ inline typename GPUSolverImpl<T>::value_type
++GPUSolverImpl<T>::View::diff(
+     typename Grid::DeviceView& u,
+     size_type i, size_type j, size_type k, size_type n
+ ) const noexcept {
+@@ -79,7 +80,8 @@ __device__ inline bool GPUSolverImpl<T>::View::is_inner_node(
+ }
+ 
+ template <typename T>
+-auto GPUSolverImpl<T>::view() const noexcept {
++typename GPUSolverImpl<T>::View
++GPUSolverImpl<T>::view() const noexcept {
+     typename View::Communicatables communicatables {
+         communicatables_[comm::Edge::Left ],
+         communicatables_[comm::Edge::Right],
+diff --git a/9-hyperbolic-part-diff-eq-cuda/grid.hpp b/9-hyperbolic-part-diff-eq-cuda/grid.hpp
+index 3fac941..b2f7a09 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/grid.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/grid.hpp
+@@ -101,7 +101,7 @@ public:
+         dm_->roll();
+     }
+ 
+-    auto view() const noexcept {
++    DeviceView view() const noexcept {
+         if (!dm_) {
+             return DeviceView();
+         }
+diff --git a/9-hyperbolic-part-diff-eq-cuda/kernel.cu b/9-hyperbolic-part-diff-eq-cuda/kernel.cu
+index b79247a..1be1b53 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/kernel.cu
++++ b/9-hyperbolic-part-diff-eq-cuda/kernel.cu
+@@ -15,7 +15,7 @@ __global__ void calc_init_nodes_impl(
+     typename GPUSolverImpl<T>::View v,
+     typename GPUSolverImpl<T>::DevicePoolManager::DeviceView e
+ ) {
+-    using size_type = GPUSolverImpl<T>::size_type;
++    using size_type = typename GPUSolverImpl<T>::size_type;
+     size_type i = threadIdx.z + blockIdx.z * blockDim.z;
+     size_type j = threadIdx.y + blockIdx.y * blockDim.y;
+     size_type k = threadIdx.x + blockIdx.x * blockDim.x;
+@@ -35,7 +35,7 @@ __global__ void calc_phi_inner_nodes_impl(
+     typename GPUSolverImpl<T>::View v,
+     typename GPUSolverImpl<T>::DevicePoolManager::DeviceView e
+ ) {
+-    using size_type = GPUSolverImpl<T>::size_type;
++    using size_type = typename GPUSolverImpl<T>::size_type;
+     size_type i = threadIdx.z + blockIdx.z * blockDim.z;
+     size_type j = threadIdx.y + blockIdx.y * blockDim.y;
+     size_type k = threadIdx.x + blockIdx.x * blockDim.x;
+@@ -62,7 +62,7 @@ __global__ void calc_phi_boundary_nodes_impl(
+     typename GPUSolverImpl<T>::View v,
+     typename GPUSolverImpl<T>::DevicePoolManager::DeviceView e
+ ) {
+-    using size_type = GPUSolverImpl<T>::size_type;
++    using size_type = typename GPUSolverImpl<T>::size_type;
+     size_type i = threadIdx.z + blockIdx.z * blockDim.z;
+     size_type j = threadIdx.y + blockIdx.y * blockDim.y;
+     size_type k = threadIdx.x + blockIdx.x * blockDim.x;
+@@ -103,7 +103,7 @@ __global__ void calc_inner_nodes_impl(
+     typename GPUSolverImpl<T>::DevicePoolManager::DeviceView e,
+     typename GPUSolverImpl<T>::size_type n
+ ) {
+-    using size_type = GPUSolverImpl<T>::size_type;
++    using size_type = typename GPUSolverImpl<T>::size_type;
+     size_type i = threadIdx.z + blockIdx.z * blockDim.z;
+     size_type j = threadIdx.y + blockIdx.y * blockDim.y;
+     size_type k = threadIdx.x + blockIdx.x * blockDim.x;
+@@ -134,7 +134,7 @@ __global__ void calc_boundary_nodes_impl(
+     typename GPUSolverImpl<T>::DevicePoolManager::DeviceView e,
+     typename GPUSolverImpl<T>::size_type n
+ ) {
+-    using size_type = GPUSolverImpl<T>::size_type;
++    using size_type = typename GPUSolverImpl<T>::size_type;
+     size_type i = threadIdx.z + blockIdx.z * blockDim.z;
+     size_type j = threadIdx.y + blockIdx.y * blockDim.y;
+     size_type k = threadIdx.x + blockIdx.x * blockDim.x;
+diff --git a/9-hyperbolic-part-diff-eq-cuda/main.cc b/9-hyperbolic-part-diff-eq-cuda/main.cc
+index 2715c25..7b9c866 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/main.cc
++++ b/9-hyperbolic-part-diff-eq-cuda/main.cc
+@@ -67,8 +67,10 @@ int main(int argc, char** argv) {
+                       << "N = " << N << " "
+                       << "K = " << K << "\n";
+         }
+-        auto solver = solver::SolverFactory(L, N, K, px, py, pz, pn, pr, gpu).make_solver();
+-        auto [_, err, time] = solver->solve();
++        auto solver = solver::SolverFactory<double>(L, N, K, px, py, pz, pn, pr, gpu).make_solver();
++        auto t = solver->solve();
++        auto err = std::get<1>(t);
++        auto time = std::get<2>(t);
+         if (pr == 0) {
+             std::cout << "Err:                " << err           << "\n"
+                       << "Total Time:         " << time.total    << "\n"
+diff --git a/9-hyperbolic-part-diff-eq-cuda/solver.hpp b/9-hyperbolic-part-diff-eq-cuda/solver.hpp
+index ae5bb05..d6d47b8 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/solver.hpp
++++ b/9-hyperbolic-part-diff-eq-cuda/solver.hpp
+@@ -59,7 +59,7 @@ public:
+         time_type load = 0;         // Load data to device time
+         time_type store = 0;        // Store data from device time
+ 
+-        auto sync() noexcept;
++        Time sync() noexcept;
+     };
+ 
+ protected:
+@@ -79,25 +79,26 @@ protected:
+     // Grid initial function
+     class InitialGridView: AnalyticalGridView {
+     public:
++        using value_type = typename AnalyticalGridView::value_type;
++
+         InitialGridView(const AnalyticalGridView& func)
+             : AnalyticalGridView(func) {}
+ 
+         __host__ __device__
+-        auto operator()(size_type i, size_type j, size_type k) const noexcept {
++        value_type operator()(size_type i, size_type j, size_type k) const noexcept {
+             return this->AnalyticalGridView::operator()(i, j, k, 0);
+         }
+     } phi_;
+ 
+-    // Check AnalyticalFunction triviality
+-    static_assert(std::is_trivially_copyable_v<InitialGridView> == true);
+-    static_assert(std::is_standard_layout_v<InitialGridView> == true);
+-
+     // Comm
+     CComm ccomm_;
+     const comm::Communicatables communicatables_; // Edge checking opt
+ 
+     // Utils
+-    inline auto diff(Grid& u, size_type i, size_type j, size_type k, size_type n) const noexcept;
++    inline value_type diff(
++        Grid& u, size_type i, size_type j, size_type k, size_type n
++    ) const noexcept;
++
+     inline bool is_boundary_node(size_type i, size_type j, size_type k) const noexcept;
+     inline bool is_inner_node(size_type i, size_type j, size_type k) const noexcept;
+ 
+@@ -125,7 +126,7 @@ public:
+         value_type g = value_type(0.5)
+     );
+ 
+-    auto solve() noexcept;
++    std::tuple<Grid, value_type, Time> solve() noexcept;
+ 
+     virtual ~Solver() = default;
+ };
+diff --git a/9-hyperbolic-part-diff-eq-cuda/solver.tpp b/9-hyperbolic-part-diff-eq-cuda/solver.tpp
+index aca2125..7c4c9c6 100644
+--- a/9-hyperbolic-part-diff-eq-cuda/solver.tpp
++++ b/9-hyperbolic-part-diff-eq-cuda/solver.tpp
+@@ -7,7 +7,8 @@
+ namespace solver {
+ 
+ template <typename T>
+-inline auto Solver<T>::diff(
++inline typename Solver<T>::value_type
++Solver<T>::diff(
+     Grid& u, size_type i, size_type j, size_type k, size_type n
+ ) const noexcept {
+     return std::abs(u_analytical_(i, j, k, n) - u(i, j, k, n));
+@@ -33,7 +34,8 @@ inline bool Solver<T>::is_boundary_node(
+ }
+ 
+ template <typename T>
+-auto Solver<T>::Time::sync() noexcept {
++typename Solver<T>::Time
++Solver<T>::Time::sync() noexcept {
+     Time t;
+     MPI_Reduce(&total,    &t.total,    1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+     MPI_Reduce(&inner,    &t.inner,    1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+@@ -60,7 +62,12 @@ Solver<T>::Solver(
+     ccomm_(ccomm), communicatables_(ccomm.get_communicatables()) {}
+ 
+ template <typename T>
+-auto Solver<T>::solve() noexcept {
++std::tuple<
++    typename Solver<T>::Grid,
++    typename Solver<T>::value_type,
++    typename Solver<T>::Time
++>
++Solver<T>::solve() noexcept {
+     Grid u(Nx_, Ny_, Nz_, K_);
+     Time time;
+     value_type error = 0;
+@@ -92,7 +99,7 @@ auto Solver<T>::solve() noexcept {
+     value_type global_error;
+     MPI_Reduce(&error, &global_error, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+ 
+-    return std::tuple(u, global_error, time.sync());
++    return std::tuple<Grid, value_type, Time>(u, global_error, time.sync());
+ }
+ 
+ } // namespace solver
