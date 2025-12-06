@@ -1,4 +1,6 @@
+.~lock.*
 *.swp
+*.d
 *.o
 *.aux
 *.fdb_latexmk
